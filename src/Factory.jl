@@ -1,5 +1,6 @@
 #throw(ErrorException("Oppps! No methods defined in src/Factory.jl. What should you do here?"))
 
+"""
 function build(modeltype::Type{MyClassicalHopfieldNetworkModel}, data::NamedTuple)::MyClassicalHopfieldNetworkModel
 
     # initialize -
@@ -35,5 +36,44 @@ function build(modeltype::Type{MyClassicalHopfieldNetworkModel}, data::NamedTupl
     # return -
     return model;
 end
+"""
 
+function build(modeltype::Type{MyClassicalHopfieldNetworkModel}, data::NamedTuple)::MyClassicalHopfieldNetworkModel
+    # initialize
+    model = modeltype()
+    linearimagecollection = data.memories
+    number_of_rows, number_of_cols = size(linearimagecollection)
+    W = zeros(Float32, number_of_rows, number_of_rows)
+    b = zeros(Float32, number_of_rows)  # zero bias for classical Hopfield
+
+    # compute W as sum of outer products
+    for j in 1:number_of_cols
+        x = linearimagecollection[:, j]
+        @inbounds @simd for r in 1:number_of_rows
+            xr = x[r]
+            @inbounds @simd for c in 1:number_of_rows
+                W[r, c] += xr * x[c]
+            end
+        end
+    end
+
+    # no self-coupling and Hebbian scaling
+    @inbounds for i in 1:number_of_rows
+        W[i, i] = 0.0f0
+    end
+    WN = W .* (1 / number_of_cols)  # elementwise scaling, same as (1/n)*W
+
+    # compute the energy dictionary
+    energy = Dict{Int64, Float32}()
+    for i in 1:number_of_cols
+        energy[i] = _energy(linearimagecollection[:, i], WN, b)
+    end
+
+    # add data to the model
+    model.W = WN
+    model.b = b
+    model.energy = energy
+
+    return model
+end
 
