@@ -69,6 +69,7 @@ Tuple of dictionaries:
 - `frames::Dict{Int64, Array{Int32,1}}`: state at each iteration (starting at key 0).
 - `energydictionary::Dict{Int64, Float32}`: energy at each iteration (starting at key 0).
 """
+
 function recover(model::MyClassicalHopfieldNetworkModel, sₒ::Array{Int32,1}, trueenergyvalue::Float32;
     maxiterations::Int = 1000, patience::Union{Int,Nothing} = nothing,
     miniterations_before_convergence::Union{Int,Nothing} = nothing)::Tuple{Dict{Int64, Array{Int32,1}}, Dict{Int64, Float32}}
@@ -178,3 +179,111 @@ function decode(simulationstate::Array{T,1};
     # return 
     return reconstructed_image
 end
+
+'
+function recover(model::MyClassicalHopfieldNetworkModel, sₒ::Array{Int32,1}, trueenergyvalue::Float32;
+    maxiterations::Int = 1000, patience::Union{Int,Nothing} = nothing,
+    miniterations_before_convergence::Union{Int,Nothing} = nothing
+)::Tuple{Dict{Int64, Array{Int32,1}}, Dict{Int64, Float32}}
+
+    # initialize
+    W = model.W
+    b = model.b
+    number_of_pixels = length(sₒ)
+
+    # scalar precomputations
+    patience_val = isnothing(patience) ? max(5, Int(round(0.1 * number_of_pixels))) : patience
+    min_iterations = max(
+        isnothing(miniterations_before_convergence) ? patience_val : miniterations_before_convergence,
+        patience_val,
+    )
+
+    # preallocate convergence buffer
+    S = CircularBuffer{Array{Int32,1}}(patience_val)
+
+    # dictionaries
+    frames = Dict{Int64, Array{Int32,1}}()
+    energydictionary = Dict{Int64, Float32}()
+    has_converged = false
+
+    # initial state and energy
+    s = copy(sₒ)
+    frames[0] = copy(s)                # keep explicit copy for frame 0
+    e0 = _energy(s, W, b)
+    energydictionary[0] = e0
+
+    iteration_counter = 1
+
+    while !has_converged
+        # select random pixel and its row of W
+        j = rand(1:number_of_pixels)
+        wj = @view W[j, :]             # avoid copying the row
+
+        # local field at node j
+        h = dot(wj, s) - b[j]
+
+        # update spin at j
+        if h == 0
+            s[j] = rand() < 0.5 ? Int32(-1) : Int32(1)
+        else
+            s[j] = h > 0 ? Int32(1) : Int32(-1)
+        end
+
+        # energy and frame storage
+        current_energy = _energy(s, W, b)
+        energydictionary[iteration_counter] = current_energy
+
+        state_snapshot = copy(s)
+        frames[iteration_counter] = state_snapshot
+
+        # convergence buffer update
+        push!(S, state_snapshot)
+        if (length(S) == patience_val) && (iteration_counter >= min_iterations)
+            first_state = S[1]
+            all_equal = true
+            for state in S
+                if hamming(first_state, state) != 0
+                    all_equal = false
+                    break
+                end
+            end
+            if all_equal
+                has_converged = true
+            end
+        end
+
+        # energy threshold check
+        if current_energy ≤ trueenergyvalue
+            has_converged = true
+            @info "Energy value lower than true. Stopping"
+        end
+
+        # iteration bookkeeping
+        iteration_counter += 1
+        if (iteration_counter > maxiterations) && !has_converged
+            has_converged = true
+            @warn "Maximum iterations reached without convergence."
+        end
+    end
+
+    return frames, energydictionary
+end
+
+
+function decode(simulationstate::Array{T,1};
+    number_of_rows::Int64 = 28,
+    number_of_cols::Int64 = 28
+)::Array{T,2} where T <: Number
+
+    reconstructed_image = Array{Int32,2}(undef, number_of_rows, number_of_cols)
+    @inbounds for row in 1:number_of_rows
+        row_offset = (row - 1) * number_of_cols
+        @inbounds for col in 1:number_of_cols
+            s = simulationstate[row_offset + col]
+            reconstructed_image[row, col] = (s == -1) ? 0 : 1
+        end
+    end
+
+    return reconstructed_image
+end
+'
